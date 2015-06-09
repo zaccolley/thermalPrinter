@@ -17,6 +17,15 @@
   "scripts": {
     "test": "make test"
   },
+  "hardware": {
+    "./demo": false,
+    "./images": false,
+    "./test": false,
+    "./node_modules": false,
+    "./node_modules/async": true,
+    "./src/helpers.js": false,
+    "README.md": false
+  },
   "keywords": [
     "adafruit",
     "printer",
