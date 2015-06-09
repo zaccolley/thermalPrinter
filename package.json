@@ -27,6 +27,7 @@
     "README.md": false
   },
   "keywords": [
+    "tessel",
     "adafruit",
     "printer",
     "thermal",
