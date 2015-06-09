@@ -1,12 +1,18 @@
 'use strict';
+var tessel = true;
+
 var util = require('util'),
 	EventEmitter = require('events').EventEmitter,
-	fs = require('fs'),
-	getPixels = require('get-pixels'),
-	deasync = require('deasync'),
-	async = require('async'),
-	sleep = require('sleep'),
-	helpers = require('./helpers');
+	async = require('async');
+
+if(!tessel){
+
+	var getPixels = require('get-pixels'),
+		deasync = require('deasync'),
+		sleep = require('sleep'),
+		helpers = require('./helpers');
+
+}
 
 /*
  * Printer opts.
@@ -36,20 +42,35 @@ var util = require('util'),
  */
 var Printer = function(serialPort, opts) {
 	EventEmitter.call(this);
+
+	if(tessel){
+		if (!serialPort.write) throw new Error('uart object must have the write function');
+	}else{
+		if (!serialPort.write || !serialPort.drain) throw new Error('The serial port object must have write and drain functions');
+	}
+
 	// Serial port used by printer
-	if (!serialPort.write || !serialPort.drain) throw new Error('The serial port object must have write and drain functions');
 	this.serialPort = serialPort;
+
+	console.log(this.serialPort);
+
 	opts = opts || {};
+
 	// Max printing dots (0-255), unit: (n+1)*8 dots, default: 7 ((7+1)*8 = 64 dots)
 	this.maxPrintingDots = opts.maxPrintingDots || 7;
+
 	// Heating time (3-255), unit: 10µs, default: 80 (800µs)
 	this.heatingTime = opts.heatingTime || 80;
+
 	// Heating interval (0-255), unit: 10µs, default: 2 (20µs)
 	this.heatingInterval = opts.heatingInterval || 2;
+
 	// delay between 2 commands (in µs)
 	this.commandDelay = opts.commandDelay || 0;
+
 	// command queue
 	this.commandQueue = [];
+
 	// printmode bytes (normal by default)
 	this.printMode = 0;
 
@@ -65,12 +86,22 @@ Printer.prototype.print = function(callback) {
 	async.eachSeries(
 		_self.commandQueue,
 		function(command, callback) {
-			if (_self.commandDelay !== 0) {
-				sleep.usleep(_self.commandDelay);
+
+			if(tessel){
+
+				_self.serialPort.write(command, callback);
+
+			}else{
+
+				if (_self.commandDelay !== 0) {
+					sleep.usleep(_self.commandDelay);
+				}
+				_self.serialPort.write(command, function() {
+					_self.serialPort.drain(callback);
+				});
+
 			}
-			_self.serialPort.write(command, function() {
-				_self.serialPort.drain(callback);
-			});
+
 		},
 		function(err) {
 			_self.commandQueue = [];
@@ -200,67 +231,85 @@ Printer.prototype.printLine = function (text) {
 };
 
 Printer.prototype.printImage = function(path, cb){
-	var done = false;
 
-	var _self = this;
-	getPixels(path, function(err, pixels){
-		if(!err){
-			var width = pixels.shape[0];
-			var height = pixels.shape[1];
+	if(tessel){
 
-			if (width != 384 || height > 65635) {
-				throw new Error('Image width must be 384px, height cannot exceed 65635px.');
-			}
+		throw new Error('This method isn\'t supported for Tessel yet');
 
-			// contruct an array of Uint8Array,
-			// each Uint8Array contains 384/8 pixel samples, corresponding to a whole line
-			var imgData = [];
-			for (var y = 0; y < height; y++) {
-				imgData[y] = new Uint8Array(width/8);
-				for (var x = 0; x < (width/8); x++) {
-					imgData[y][x] = 0;
-					for (var n = 0; n < 8; n++) {
-						var r = pixels.get(x*8+n, y, 0);
-						var g = pixels.get(x*8+n, y, 1);
-						var b = pixels.get(x*8+n, y, 2);
+	}else{
 
-						var brightness = helpers.rgbToHsl(r, g, b)[2];
-						// only print dark stuff
-						if (brightness < 0.6) {
-							imgData[y][x] += (1 << n);
+		var done = false;
+
+		var _self = this;
+		getPixels(path, function(err, pixels){
+			if(!err){
+				var width = pixels.shape[0];
+				var height = pixels.shape[1];
+
+				if (width != 384 || height > 65635) {
+					throw new Error('Image width must be 384px, height cannot exceed 65635px.');
+				}
+
+				// contruct an array of Uint8Array,
+				// each Uint8Array contains 384/8 pixel samples, corresponding to a whole line
+				var imgData = [];
+				for (var y = 0; y < height; y++) {
+					imgData[y] = new Uint8Array(width/8);
+					for (var x = 0; x < (width/8); x++) {
+						imgData[y][x] = 0;
+						for (var n = 0; n < 8; n++) {
+							var r = pixels.get(x*8+n, y, 0);
+							var g = pixels.get(x*8+n, y, 1);
+							var b = pixels.get(x*8+n, y, 2);
+
+							var brightness = helpers.rgbToHsl(r, g, b)[2];
+							// only print dark stuff
+							if (brightness < 0.6) {
+								imgData[y][x] += (1 << n);
+							}
 						}
 					}
 				}
-			}
 
-			// send the commands and buffers to the printer
-			_self.printImageData(width, height, imgData);
-			// tell deasync getPixels is done
-			done = true;
+				// send the commands and buffers to the printer
+				_self.printImageData(width, height, imgData);
+				// tell deasync getPixels is done
+				done = true;
+			}
+			else {
+				throw new Error(err);
+			}
+		});
+		// deasync getPixels
+		while(!done) {
+			deasync.runLoopOnce();
 		}
-		else {
-			throw new Error(err);
-		}
-	});
-	// deasync getPixels
-	while(!done) {
-		deasync.runLoopOnce();
 	}
+
 	return this;
 };
 
 Printer.prototype.printImageData =function(width, height, imgData){
-	if (width != 384 || height > 65635) {
-		throw new Error('Image width must be 384px, height cannot exceed 65635px.');
+
+	if(tessel){
+
+		throw new Error('This method isn\'t supported for Tessel yet');
+
+	}else{
+
+		if (width != 384 || height > 65635) {
+			throw new Error('Image width must be 384px, height cannot exceed 65635px.');
+		}
+
+		// send the commands and buffers to the printer
+		var commands = [18, 118, height & 255, height >> 8];
+		for (var y = 0; y < imgData.length; y++) {
+			var buf = helpers.uint8ArrayToBuffer(imgData[y]);
+			commands.push.apply(commands, buf);
+		}
+		this.writeCommands(commands);
 	}
 
-	// send the commands and buffers to the printer
-	var commands = [18, 118, height & 255, height >> 8];
-	for (var y = 0; y < imgData.length; y++) {
-		var buf = helpers.uint8ArrayToBuffer(imgData[y]);
-		commands.push.apply(commands, buf);
-	}
-	this.writeCommands(commands);
 	return this;
 };
 
@@ -401,4 +450,22 @@ Printer.prototype.barcode = function(type, data) {
 	return this.writeCommands(commands);
 };
 
-module.exports = Printer;
+if(tessel){
+
+	function use(port, opts, callback){
+		var serialPort = new port.UART({ baudrate: 19200 });
+		return new Printer(serialPort, opts, callback);
+	}
+
+	/**
+	 * Public API
+	 */
+
+	exports.Printer = Printer;
+	exports.use = use;
+
+}else{
+
+	module.exports = Printer;
+
+}
